@@ -1,10 +1,9 @@
-# Ignore everything
-*
+.git
+.vs
+external_includes
+out
 
-# Source files
-!.gitignore
-!CMakeLists.txt
-!CMakeSettings.json
-!*.cpp
-!*.cc
-!*.h
+build/*
+
+!build/renders
+!build/scenes

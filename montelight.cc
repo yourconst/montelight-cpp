@@ -14,7 +14,11 @@
 #include <thread>
 #include <chrono>
 
-//#include <json/json.h>
+
+#include "rapidjson/document.h"
+#include "rapidjson/allocators.h"
+#include "rapidjson/writer.h"
+#include "rapidjson/stringbuffer.h"
 
 #define EPSILON 0.001f
 
@@ -256,37 +260,19 @@ struct Sphere : Shape {
 /////////////////////////
 // Scene format: Sphere(position, radius, color, emission)
 /////////////////////////
-std::vector<Shape *> simpleScene = {
-  // Left sphere
-  new Sphere(Vector(1e5+1,40.8,81.6), 1e5f, Vector(.75,.25,.25), Vector()),
-  // Right sphere
-  new Sphere(Vector(-1e5+99,40.8,81.6), 1e5f, Vector(.25,.25,.75), Vector()),
-  // Back sphere
-  new Sphere(Vector(50,40.8, 1e5), 1e5f, Vector(.75,.75,.75), Vector()),
-  // Floor sphere
-  new Sphere(Vector(50, 1e5, 81.6), 1e5f, Vector(.75,.75,.75), Vector()),
-  // Roof sphere
-  new Sphere(Vector(50,-1e5+81.6,81.6), 1e5f, Vector(.75,.75,.75), Vector()),
-  // Traditional mirror sphere
-  new Sphere(Vector(27,16.5,47), 16.5f, Vector(1,1,1) * 0.799, Vector()),
-  // Traditional glass sphere
-  new Sphere(Vector(73,16.5,78), 16.5f, Vector(1,1,1) * 0.799, Vector()),
-  // Light source
-  //new Sphere(Vector(50,681.6-.27,81.6), 600, Vector(1,1,1) * 0.5, Vector(12,12,12))
-  new Sphere(Vector(50,65.1,81.6), 8.5, Vector(), Vector(4,4,4) * 100) // Small = 1.5, Large = 8.5
-};
-/////////////////////////
-std::vector<Shape *> complexScene = {
-  new Sphere(Vector(1e5+1,40.8,81.6), 1e5f, Vector(.75,.25,.25), Vector()), // Left
-  new Sphere(Vector(-1e5+99,40.8,81.6), 1e5f, Vector(.25,.25,.75), Vector()), // Right
-  new Sphere(Vector(50,40.8, 1e5), 1e5f, Vector(.75,.75,.75), Vector()), // Back
-  new Sphere(Vector(50, 1e5, 81.6), 1e5f, Vector(.75,.75,.75), Vector()), //Bottom
-  new Sphere(Vector(50,-1e5+81.6,81.6), 1e5f, Vector(.75,.75,.75), Vector()), // Top
-  new Sphere(Vector(20,16.5,40), 16.5f, Vector(1,1,1) * 0.799, Vector()),
-  new Sphere(Vector(50,16.5,80), 16.5f, Vector(1,1,1) * 0.799, Vector()),
-  new Sphere(Vector(75,16.5,120), 16.5f, Vector(1,1,1) * 0.799, Vector()),
-  new Sphere(Vector(50,65.1,40), 1.5, Vector(), Vector(4,4,4) * 100), // Light
-  new Sphere(Vector(50,65.1,120), 1.5, Vector(), Vector(4,4,4) * 100), // Light
+std::vector<Shape*> baseScene = {
+    // Left sphere
+    new Sphere(Vector(1e5 + 1,40.8,81.6), 1e5f, Vector(.75,.25,.25), Vector()),
+    // Right sphere
+    new Sphere(Vector(-1e5 + 99,40.8,81.6), 1e5f, Vector(.25,.25,.75), Vector()),
+    // Back sphere
+    new Sphere(Vector(50,40.8, 1e5), 1e5f, Vector(.75,.75,.75), Vector()),
+    // Floor sphere
+    new Sphere(Vector(50, 1e5, 81.6), 1e5f, Vector(.75,.75,.75), Vector()),
+    // Roof sphere
+    new Sphere(Vector(50,-1e5 + 81.6,81.6), 1e5f, Vector(.75,.75,.75), Vector()),
+    // Light source
+    new Sphere(Vector(50,65.1,81.6), 8.5, Vector(), Vector(4,4,4) * 100) // Small = 1.5, Large = 8.5
 };
 //
 
@@ -384,7 +370,7 @@ int w = 512;
 int h = 512;
 
 Image * img;
-auto& scene = simpleScene;
+auto& scene = baseScene;
 Tracer tracer = Tracer(scene);
 
 void threadRenderer(int id, int startY, int lastY) {
@@ -481,6 +467,83 @@ void threadRenderer(int id, int startY, int lastY) {
   threadInfo.isDone = true;
 }
 
+class IFile {
+public:
+    std::ifstream stream;
+    char* buffer = NULL;
+
+    IFile(string filename) {
+        stream.open(filename, std::ifstream::in + std::ifstream::binary);
+
+        stream.seekg(0, stream.end);
+        int len = stream.tellg();
+        stream.seekg(0);
+
+        buffer = new char[len];
+        stream.read((char*) buffer, len);
+    }
+
+    ~IFile() {
+        if (buffer)
+            delete[]buffer;
+
+        if (stream.is_open())
+            stream.close();
+    }
+};
+
+Vector parseVector(const rapidjson::Value &v, bool allowNull = false) {
+    Vector result;
+
+    if (v.IsArray()) {
+        auto values = v.GetArray();
+
+        result.x = values[0].GetDouble();
+        result.y = values[1].GetDouble();
+        result.z = values[2].GetDouble();
+    }
+    else if (v.IsObject()) {
+        result.x = v["x"].GetDouble();
+        result.y = v["y"].GetDouble();
+        result.z = v["z"].GetDouble();
+    }
+    else if(!allowNull)
+        throw "Bad vector in json";
+
+    return result;
+}
+
+void parseScene(string filename) {
+    IFile file(filename);
+
+    rapidjson::Document json;
+    json.Parse(file.buffer);
+
+    if (!json["objects"].IsArray()) return;
+
+    auto objects = json["objects"].GetArray();
+
+    for (const auto& obj : objects) {
+        auto type = obj["type"].GetString();
+
+        cout << "Shape " << type;
+
+        if (type != (string)"sphere") {
+            cout << endl;
+            continue;
+        }
+
+        tracer.scene.push_back(new Sphere(
+            parseVector(obj["center"]),
+            obj["radius"].GetDouble(),
+            parseVector(obj["color"]),
+            parseVector(obj["emit"], true)
+        ));
+
+        cout << " added" << endl;
+    }
+}
+
 unsigned getCurrentTime() {
     return chrono::system_clock::now().time_since_epoch().count();
 }
@@ -506,12 +569,10 @@ int main(int argc, const char* argv[]) {
         srand48(1308);
     #endif
 
-    /*const string rawJson = R"({"Age": 20, "Name": "colin"})";
-    Json::Value root;
-    Json::Reader reader;
-    reader.parse(rawJson, root);
+    string sceneFileName = getValue("Scene file", (string) "scenes/simple.json");
+    parseScene(sceneFileName);
 
-    cout << root["name"].asString() << endl;*/
+    string resultFileName = getValue("Result file (w/o extension)", (string) "renders/render");
 
     w = getValue("Image width", w);
     h = getValue("Image height", w);
@@ -556,7 +617,7 @@ int main(int argc, const char* argv[]) {
     cout << endl << "Time: " << ((getCurrentTime() - startTime) / 1e4) << " ms" << endl;
 
     // Save the resulting raytraced image
-    img->save("render");
+    img->save(resultFileName);
 
     return 0;
 }
