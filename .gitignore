@@ -3,6 +3,8 @@
 
 # Source files
 !.gitignore
+!CMakeLists.txt
+!CMakeSettings.json
 !*.cpp
 !*.cc
 !*.h

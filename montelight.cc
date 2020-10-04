@@ -1,5 +1,8 @@
 // ==Montelight==
 // Tegan Brennan, Stephen Merity, Taiyo Wilson
+
+#define _USE_MATH_DEFINES
+
 #include <cmath>
 #include <string>
 #include <iomanip>
@@ -11,6 +14,14 @@
 #define EPSILON 0.001f
 
 using namespace std;
+
+double drand() {
+    #ifdef _WIN32
+    return double(rand()) / RAND_MAX;
+    #else
+    return drand48();
+    #endif
+}
 
 // Globals
 bool EMITTER_SAMPLING = true;
@@ -201,8 +212,8 @@ struct Sphere : Shape {
     // See: https://www.jasondavies.com/maps/random-points/
     //
     // Get random spherical coordinates on light
-    double theta = drand48() * M_PI;
-    double phi = drand48() * 2 * M_PI;
+    double theta = drand() * M_PI;
+    double phi = drand() * 2 * M_PI;
     // Convert to Cartesian and scale by radius
     double dxr = radius * sin(theta) * cos(phi);
     double dyr = radius * sin(theta) * sin(phi);
@@ -276,7 +287,7 @@ struct Tracer {
     auto result = getIntersection(r);
     Shape *hitObj = result.first;
     // Russian Roulette sampling based on reflectance of material
-    double U = drand48();
+    double U = drand();
     if (depth > 4 && (depth > 20 || U > hitObj->color.max())) {
       return Vector();
     }
@@ -313,8 +324,8 @@ struct Tracer {
     // Work out contribution from reflected light
     // Diffuse reflection condition:
     // Create orthogonal coordinate system defined by (x=u, y=v, z=norm)
-    double angle = 2 * M_PI * drand48();
-    double dist_cen = sqrt(drand48());
+    double angle = 2 * M_PI * drand();
+    double dist_cen = sqrt(drand());
     Vector u;
     if (fabs(norm.x) > 0.1) {
       u = Vector(0, 1, 0);
@@ -337,6 +348,11 @@ struct Tracer {
 };
 
 int main(int argc, const char *argv[]) {
+  #ifdef _WIN32
+    srand(1308);
+  #else
+    srand48(1308);
+  #endif
   /////////////////////////
   // Variables to modify the process or the images
   EMITTER_SAMPLING = true;
@@ -383,14 +399,14 @@ int main(int argc, const char *argv[]) {
         /*
         Vector target = img.getPixel(x, y);
         double A = (target - img.getSurroundingAverage(x, y, sample % 2)).abs().max() / (100 / 255.0);
-        if (sample > 10 && drand48() > A) {
+        if (sample > 10 && drand() > A) {
           continue;
         }
         ++updated;
         */
         // Jitter pixel randomly in dx and dy according to the tent filter
-        double Ux = 2 * drand48();
-        double Uy = 2 * drand48();
+        double Ux = 2 * drand();
+        double Uy = 2 * drand();
         double dx;
         if (Ux < 1) {
           dx = sqrt(Ux) - 1;
