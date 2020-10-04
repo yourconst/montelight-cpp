@@ -1,6 +1,8 @@
-*
+.git
+.vs
+external_includes
+out
+build/*
 
-!.gitignore
-!LICENSE
-!*.cc
-!*.md
+!build/renders
+!build/scenes

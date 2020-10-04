@@ -1,0 +1,30 @@
+{
+  "lights": [],
+  "objects": [
+    {
+      "type": "sphere",
+      "center": [ 27, 16.5, 47 ],
+      "radius": 16.5,
+      "color": [ 0.8, 0.8, 0.8 ],
+      "emit": [ 0, 0, 0 ]
+    },
+    {
+      "type": "sphere",
+      "center": [ 73, 16.5, 78 ],
+      "radius": 16.5,
+      "color": [ 0.8, 0.8, 0.8 ]
+    },
+    {
+      "type": "sphere",
+      "center": [ 50, 16.5, 50 ],
+      "radius": 6.5,
+      "color": [ 0.8, 0.8, 0.8 ]
+    },
+    {
+      "type": "sphere",
+      "center": [ 55, 7.5, 50 ],
+      "radius": 3.5,
+      "color": [ 0.8, 0.8, 0.8 ]
+    }
+  ]
+}
