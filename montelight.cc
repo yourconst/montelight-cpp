@@ -11,6 +11,11 @@
 #include <sstream>
 #include <vector>
 
+#include <thread>
+#include <chrono>
+
+//#include <json/json.h>
+
 #define EPSILON 0.001f
 
 using namespace std;
@@ -132,7 +137,7 @@ struct Image {
   inline double toInt(double x) {
     return pow(x, 1 / 2.2f) * 255;
   }
-  void save(std::string filePrefix) {
+  void saveP3(std::string filePrefix) {
     std::string filename = filePrefix + ".ppm";
     std::ofstream f;
     f.open(filename.c_str(), std::ofstream::out);
@@ -144,6 +149,25 @@ struct Image {
       unsigned int r = fmin(255, toInt(p.x)), g = fmin(255, toInt(p.y)), b = fmin(255, toInt(p.z));
       f << r << " " << g << " " << b << std::endl;
     }
+  }
+  void save(std::string filePrefix) {
+      std::string filename = filePrefix + ".ppm";
+      std::ofstream f;
+      f.open(filename.c_str(), std::ofstream::binary);
+      // PPM header: P3 => RGB, width, height, and max RGB value
+      f << "P6 " << width << " " << height << " " << 255 << std::endl;
+
+      unsigned len = 3 * width * height;
+      unsigned char* buf = new unsigned char[len];
+
+      for (int i = 0; i < width * height; i++) {
+          auto p = pixels[i] / samples[i];
+          unsigned int r = fmin(255, toInt(p.x)), g = fmin(255, toInt(p.y)), b = fmin(255, toInt(p.z));
+          buf[3 * i] = r; buf[3 * i + 1] = g; buf[3 * i + 2] = b;
+      }
+
+      f.write((char*)buf, len);
+      f.close();
   }
   void saveHistogram(std::string filePrefix, int maxIters) {
     std::string filename = filePrefix + ".ppm";
@@ -347,27 +371,39 @@ struct Tracer {
   }
 };
 
-int main(int argc, const char *argv[]) {
-  #ifdef _WIN32
-    srand(1308);
-  #else
-    srand48(1308);
-  #endif
+struct ThreadInfo {
+    double progress = 0;
+    bool isDone = false;
+};
+
+ThreadInfo* threadsInfo;
+
+unsigned int SAMPLES = 25;
+
+int w = 512;
+int h = 512;
+
+Image * img;
+auto& scene = simpleScene;
+Tracer tracer = Tracer(scene);
+
+void threadRenderer(int id, int startY, int lastY) {
+  auto& threadInfo = threadsInfo[id];
   /////////////////////////
   // Variables to modify the process or the images
   EMITTER_SAMPLING = true;
-  int w = 256, h = 256;
+  //int w = 256, h = 256;
   int SNAPSHOT_INTERVAL = 10;
-  unsigned int SAMPLES = 50;
+  //unsigned int SAMPLES = 50;
   bool FOCUS_EFFECT = false;
   double FOCAL_LENGTH = 35;
   double APERTURE_FACTOR = 1; // ratio of original/new aperture (>1: smaller view angle, <1: larger view angle)
   // Initialize the image
-  Image img(w, h);
+  //Image img(w, h);
   /////////////////////////
   // Set which scene should be raytraced
-  auto &scene = complexScene;
-  Tracer tracer = Tracer(scene);
+  //auto &scene = complexScene;
+  //Tracer tracer = Tracer(scene);
   /////////////////////////
   // Set up the camera
   double aperture = 0.5135 / APERTURE_FACTOR;
@@ -386,16 +422,11 @@ int main(int argc, const char *argv[]) {
   Vector cy = (cx.cross(camera.direction)).norm() * aperture;
   /////////////////////////
   // Take a set number of samples per pixel
-  for (int sample = 0; sample < SAMPLES; ++sample) {
-    std::cout << "Taking sample " << sample << "\r" << std::flush;
-    if (sample && sample % SNAPSHOT_INTERVAL == 0) {
-      std::ostringstream fn;
-      fn << std::setfill('0') << std::setw(5) << sample;
-      img.save("temp/render_" + fn.str());
-    }
-    // For each pixel, sample a ray in that direction
-    for (int y = 0; y < h; ++y) {
-      for (int x = 0; x < w; ++x) {
+  
+  // For each pixel, sample a ray in that direction
+  for (int y = startY; y < lastY; ++y) {
+    for (int x = 0; x < w; ++x) {
+      for (int sample = 0; sample < SAMPLES; ++sample) {
         /*
         Vector target = img.getPixel(x, y);
         double A = (target - img.getSurroundingAverage(x, y, sample % 2)).abs().max() / (100 / 255.0);
@@ -440,11 +471,92 @@ int main(int argc, const char *argv[]) {
         // If we don't do this, antialiasing doesn't work properly on bright lights
         rads.clamp();
         // Add result of sample to image
-        img.setPixel(x, y, rads);
+        img->setPixel(x, y, rads);
       }
     }
+
+    threadInfo.progress = double(y + 1 - startY) / (lastY - startY);
   }
-  // Save the resulting raytraced image
-  img.save("render");
-  return 0;
+
+  threadInfo.isDone = true;
+}
+
+unsigned getCurrentTime() {
+    return chrono::system_clock::now().time_since_epoch().count();
+}
+
+template<typename T> T getValue(string message, T defaultValue) {
+    cout << message << " (default - " << defaultValue << "): ";
+
+    std::string input;
+    std::getline(std::cin, input);
+
+    if (!input.empty()) {
+        std::istringstream stream(input);
+        stream >> defaultValue;
+    }
+
+    return defaultValue;
+}
+
+int main(int argc, const char* argv[]) {
+    #ifdef _WIN32
+        srand(1308);
+    #else
+        srand48(1308);
+    #endif
+
+    /*const string rawJson = R"({"Age": 20, "Name": "colin"})";
+    Json::Value root;
+    Json::Reader reader;
+    reader.parse(rawJson, root);
+
+    cout << root["name"].asString() << endl;*/
+
+    w = getValue("Image width", w);
+    h = getValue("Image height", w);
+    SAMPLES = getValue("Samples count", SAMPLES);
+    const int cpus = getValue("Threads count", thread::hardware_concurrency());
+
+
+    threadsInfo = new ThreadInfo[cpus];
+
+    img = new Image(w, h);
+
+    const int part = h / cpus;
+    int startIndex = 0;
+
+    const unsigned startTime = getCurrentTime();
+
+    for (int i = 0; i < cpus - 1; ++i, startIndex += part) {
+        new thread(threadRenderer, i, startIndex, startIndex + part);
+    }
+
+    new thread(threadRenderer, cpus - 1, startIndex, h);
+
+    while (true) {
+        double sumProgress = 0;
+        bool isAllDone = true;
+
+        for (int i = 0; i < cpus; ++i) {
+            sumProgress += threadsInfo[i].progress;
+            isAllDone = isAllDone && threadsInfo[i].isDone;
+        }
+
+        std::cout << "Progress: "
+            << std::fixed << std::setprecision(2) << sumProgress * 100 / cpus
+            << "\r" << std::flush;
+
+        if (isAllDone)
+            break;
+
+        this_thread::sleep_for(chrono::milliseconds(500));
+    }
+
+    cout << endl << "Time: " << ((getCurrentTime() - startTime) / 1e4) << " ms" << endl;
+
+    // Save the resulting raytraced image
+    img->save("render");
+
+    return 0;
 }
