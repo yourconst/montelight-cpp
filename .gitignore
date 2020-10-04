@@ -2,7 +2,6 @@
 .vs
 external_includes
 out
-
 build/*
 
 !build/renders
