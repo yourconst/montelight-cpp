@@ -146,19 +146,6 @@ struct Image {
   inline double toInt(double x) {
     return pow(x, 1 / 2.2f) * 255;
   }
-  void saveP3(std::string filePrefix) {
-    std::string filename = filePrefix + ".ppm";
-    std::ofstream f;
-    f.open(filename.c_str(), std::ofstream::out);
-    // PPM header: P3 => RGB, width, height, and max RGB value
-    f << "P3 " << width << " " << height << " " << 255 << std::endl;
-    // For each pixel, write the space separated RGB values
-    for (int i=0; i < pixelsCount; ++i) {
-      auto p = pixels[i] / samples[i];
-      unsigned int r = fmin(255, toInt(p.x)), g = fmin(255, toInt(p.y)), b = fmin(255, toInt(p.z));
-      f << r << " " << g << " " << b << std::endl;
-    }
-  }
   void save(std::string filePrefix) {
       std::string filename = filePrefix + ".ppm";
       std::ofstream f;
@@ -167,12 +154,13 @@ struct Image {
       f << "P6 " << width << " " << height << " " << 255 << std::endl;
 
       unsigned len = 3 * pixelsCount;
-      unsigned char* buf = new unsigned char[len];
+      BYTE* buf = new BYTE[len];
 
       for (int i = 0; i < pixelsCount; ++i) {
           auto p = pixels[i] / samples[i];
-          unsigned int r = fmin(255, toInt(p.x)), g = fmin(255, toInt(p.y)), b = fmin(255, toInt(p.z));
-          buf[3 * i] = r; buf[3 * i + 1] = g; buf[3 * i + 2] = b;
+          buf[3 * i] = fmin(255, toInt(p.x));
+          buf[3 * i + 1] = fmin(255, toInt(p.y));
+          buf[3 * i + 2] = fmin(255, toInt(p.z));
       }
 
       f.write((char*)buf, len);
@@ -186,10 +174,16 @@ struct Image {
 
 struct Shape {
   Vector color, emit;
+  double reflection;
   double diffusion;
   //
-  Shape(const Vector color_, const Vector emit_, const double reflection_ = .0) :
-      color(color_), emit(emit_), diffusion(1.0 - reflection_) {}
+  Shape(
+      const Vector color_,
+      const Vector emit_,
+      const double reflection_ = .0,
+      const double diffusion_ = 1.0
+  ) :
+      color(color_), emit(emit_), reflection(reflection_), diffusion(diffusion_) {}
   virtual double intersects(const Ray &r) const { return 0; }
   virtual Vector randomPoint() const { return Vector(); }
   virtual Vector getNormal(const Vector &p) const { return Vector(); }
@@ -204,9 +198,10 @@ struct Sphere : Shape {
       double radius_,
       const Vector color_,
       const Vector emit_,
-      const double reflection_ = .0
+      const double reflection_ = .0,
+      const double diffusion_ = 1.0
   ) :
-    Shape(color_, emit_, reflection_), center(center_), radius(radius_) {}
+    Shape(color_, emit_, reflection_, diffusion_), center(center_), radius(radius_) {}
   double intersects(const Ray &r) const {
     // Find if, and at what distance, the ray intersects with this object
     // Equation follows from solving quadratic equation of (r - c) ^ 2
@@ -269,7 +264,7 @@ std::vector<Shape*> baseScene = {
     // Floor sphere
     new Sphere(Vector(50, 1e5, 81.6), 1e5f, Vector(.75,.75,.75), Vector()),
     // Roof sphere
-    new Sphere(Vector(50,-1e5 + 81.6,81.6), 1e5f, Vector(.75,.75,.75), Vector())
+    new Sphere(Vector(50,-1e5 + 81.6,81.6), 1e5f, Vector(.75,.75,.75), Vector(), 0.5, 0)
 };
 //
 
@@ -343,26 +338,105 @@ struct Tracer {
     // Work out contribution from reflected light
     // Diffuse reflection condition:
     // Create orthogonal coordinate system defined by (x=u, y=v, z=norm)
-    double angle = 2 * M_PI * drand();
-    double dist_cen = hitObj->diffusion * sqrt(drand());
-    Vector u = (fabs(norm.x) > 0.1 ? Vector(0, 1, 0) : Vector(1, 0, 0)).cross(norm).norm();
-    Vector v = norm.cross(u);
-    // Direction of reflection
-    Vector d = (u * cos(angle) * dist_cen + v * sin(angle) * dist_cen + norm * sqrt(1 - dist_cen * dist_cen)).norm();
+    Vector res = hitObj->emit;
 
-    // Russian Roulette sampling based on reflectance of material
-    //double U = drand();
-    //if (depth > 4 /* && (depth > 20 || drand() > 0.5 U > hitObj->color.max())*/) {
-    //    return Vector();
-    //}
-    // Recurse
-    Vector reflected = depth >= max_depth ? Vector() : getRadiance(Ray(hitPos, d), depth + 1);
-    //
+    if (hitObj->diffusion) {
+        double angle = 2 * M_PI * drand();
+        double dist_cen = sqrt(drand());
+        Vector u = (fabs(norm.x) > 0.1 ? Vector(0, 1, 0) : Vector(1, 0, 0)).cross(norm).norm();
+        Vector v = norm.cross(u);
+        // Direction of reflection
+        Vector d = (u * cos(angle) * dist_cen + v * sin(angle) * dist_cen + norm * sqrt(1 - dist_cen * dist_cen)).norm();
 
-    //if (!EMITTER_SAMPLING || depth == 0) {
-    return hitObj->emit + (hitObj->color * lightSampling) * hitObj->diffusion + hitObj->color * reflected;
-    //}
-    //return hitObj->color * lightSampling + hitObj->color * reflected;
+        // Russian Roulette sampling based on reflectance of material
+        //double U = drand();
+        //if (depth > 4 /* && (depth > 20 || drand() > 0.5 U > hitObj->color.max())*/) {
+        //    return Vector();
+        //}
+        // Recurse
+        Vector reflected = depth >= max_depth ? Vector() : getRadiance(Ray(hitPos, d), depth + 1);
+        //
+
+        //if (!EMITTER_SAMPLING || depth == 0) {
+        res += (hitObj->color * lightSampling + hitObj->color * reflected) * hitObj->diffusion;
+        //}
+        //return hitObj->color * lightSampling + hitObj->color * reflected;
+    }
+
+    if(hitObj->reflection) {
+        Vector d = r.direction - norm * norm.dot(r.direction) * 2;
+        Vector reflected = depth >= max_depth ? Vector() : getRadiance(Ray(hitPos, d), depth + 1);
+        res += reflected * hitObj->reflection;
+    }
+
+    return res;
+  }
+
+  Vector getRadiance2(const Ray& ray) {
+      static const unsigned max_depth = MAX_DEPTH + 1;
+      static thread_local Shape* hitObjs[10];
+      static thread_local Vector colorsWOReflections[10];
+
+      auto r = ray;
+
+      for (int i = max_depth - 1; i >= 0; --i) {
+          // Work out what (if anything) was hit
+          auto result = getIntersection(r);
+          Shape* hitObj = result.first;
+
+          if(!hitObj) break;
+
+          Vector hitPos = r.origin + r.direction * result.second;
+          Vector norm = hitObj->getNormal(hitPos);
+          // Orient the normal according to how the ray struck the object
+          if (norm.dot(r.direction) > 0) {
+              norm.selfScalar(-1);
+              //norm = norm * -1;
+          }
+          // Work out the contribution from directly sampling the emitters
+          Vector lightSampling;
+          if (EMITTER_SAMPLING) {
+              for (Shape* light : scene.lights) {
+                  Vector lightPos = light->randomPoint();
+                  Vector lightDirection = (lightPos - hitPos).norm();
+                  Ray rayToLight = Ray(hitPos, lightDirection);
+                  auto lightHit = getIntersection(rayToLight);
+                  if (light == lightHit.first) {
+                      double wi = lightDirection.dot(norm);
+                      if (wi > 0) {
+                          double srad = 1.5;
+                          //double srad = 600;
+                          double cos_a_max = sqrt(1 - srad * srad / (hitPos - lightPos).dot(hitPos - lightPos));
+                          double omega = 2 * M_PI * (1 - cos_a_max);
+                          lightSampling += light->emit * wi * omega * M_1_PI;
+                      }
+                  }
+              }
+          }
+          // Work out contribution from reflected light
+          // Diffuse reflection condition:
+          // Create orthogonal coordinate system defined by (x=u, y=v, z=norm)
+          double angle = 2 * M_PI * drand();
+          double dist_cen = hitObj->diffusion * sqrt(drand());
+          Vector u = (fabs(norm.x) > 0.1 ? Vector(0, 1, 0) : Vector(1, 0, 0)).cross(norm).norm();
+          Vector v = norm.cross(u);
+          // Direction of reflection
+
+          r.direction = (u * cos(angle) * dist_cen + v * sin(angle) * dist_cen + norm * sqrt(1 - dist_cen * dist_cen)).norm();
+
+          r.origin = hitPos;
+          //r.direction = d;
+
+          hitObjs[i] = hitObj;
+          colorsWOReflections[i] = hitObj->emit + (hitObj->color * lightSampling) * hitObj->diffusion;
+      }
+
+      auto res = Vector();
+      for (unsigned i(0); i < max_depth; ++i) {
+          res = colorsWOReflections[i] + hitObjs[i]->color * res;
+      }
+
+      return res;
   }
 };
 
@@ -425,10 +499,9 @@ void threadRenderer(int id, int startPos, int lastPos) {
     unsigned x = ind % w;
     unsigned y = h - ind / w;
 
-    //Vector& pixel = img->pixels[ind];
+    Vector& pixel = img->pixels[ind];
 
     for (unsigned sample = 0; sample < SAMPLES; ++sample) {
-        
         /*Vector target = img->getPixel(x, y);
         double A = (target - img->getSurroundingAverage(x, y, sample % 2)).abs().max() / (100 / 255.0);
         if (sample > 10 && drand() > A) {
@@ -460,13 +533,15 @@ void threadRenderer(int id, int startPos, int lastPos) {
         // Retrieve the radiance of the given hit location (i.e. brightness of the pixel)
         auto rads = tracer.getRadiance(ray, 0);
         //auto rads = tracer.getRadiance2(ray);
-        //pixel += tracer.getRadiance(ray, 0);
         // Clamp the radiance so it is between 0 and 1
         // If we don't do this, antialiasing doesn't work properly on bright lights
         rads.clamp();
+        //pixel += rads;
         // Add result of sample to image
         img->setPixelByIndex(ind, rads);
     }
+
+    //img->samples[ind] = SAMPLES;
 
     //pixel.selfScalar(1 / SAMPLES);
 
@@ -511,12 +586,16 @@ public:
     }
 };
 
-double parseDouble(const rapidjson::Value& v, bool allowNull = false) {
+double parseDouble(const rapidjson::Value& v) {
     if (v.IsNumber()) return v.GetDouble();
 
-    if (allowNull) return .0;
-
     throw "Bad double value in json";
+}
+
+double parseDouble(const rapidjson::Value& v, double dflt) {
+    if (v.IsNumber()) return v.GetDouble();
+
+    return dflt;
 }
 
 Vector parseVector(const rapidjson::Value& v, bool allowNull = false) {
@@ -569,10 +648,11 @@ void parseObjectsArray(
 
         res.push_back(new Sphere(
             parseVector(obj["center"]),
-            parseDouble(obj["radius"], true),
+            parseDouble(obj["radius"]),
             parseVector(obj["color"]),
             parseVector(obj["emit"], true),
-            parseDouble(obj["reflection"], true)
+            parseDouble(obj["reflection"], 0),
+            parseDouble(obj["diffusion"], 1)
         ));
 
         ++added;

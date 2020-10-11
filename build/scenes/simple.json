@@ -27,14 +27,24 @@
       "center": [ 50, 16.5, 50 ],
       "radius": 6.5,
       "color": [ 0.2, 0.2, 1 ],
-      "reflection": 0.7
+      "reflection": 0.1
     },
     {
       "type": "sphere",
-      "center": [ 75, 65, 25 ],
+      "center": [ 97, 65, 3 ],
       "radius": 16.5,
       "color": [ 1, 1, 1 ],
-      "reflection": 0.99
+      "diffusion": 0,
+      "reflection": 1,
+      "refraction": 0.7
+    },
+    {
+      "type": "sphere",
+      "center": [ 25, 55, 4.5 ],
+      "radius": 16.5,
+      "color": [ 1, 1, 1 ],
+      "diffusion": 0.1,
+      "reflection": 0.3
     }
   ]
 }
