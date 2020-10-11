@@ -13,27 +13,20 @@
 
 #include <thread>
 #include <chrono>
-
+#include <direct.h>
 
 #include "rapidjson/document.h"
-#include "rapidjson/allocators.h"
-#include "rapidjson/writer.h"
-#include "rapidjson/stringbuffer.h"
+
+#include "libs/drand.hpp"
 
 #define EPSILON 0.001f
 
 using namespace std;
 
-double drand() {
-    #ifdef _WIN32
-    return double(rand()) / RAND_MAX;
-    #else
-    return drand48();
-    #endif
-}
-
 // Globals
 bool EMITTER_SAMPLING = true;
+unsigned MAX_DEPTH = 4;
+unsigned SAMPLES = 25;
 
 struct Vector {
   double x, y, z;
@@ -58,6 +51,11 @@ struct Vector {
   }
   inline Vector operator*(double o) const {
     return Vector(x * o, y * o, z * o);
+  }
+  inline void selfScalar(const int & v) {
+      x *= v;
+      y *= v;
+      z *= v;
   }
   inline double dot(const Vector &o) const {
     return x * o.x + y * o.y + z * o.z;
@@ -96,15 +94,16 @@ struct Ray {
 };
 
 struct Image {
-  unsigned int width, height;
+  unsigned int width, height, pixelsCount;
   Vector *pixels, *current;
   unsigned int *samples;
-  std::vector<Vector> *raw_samples;
+  //std::vector<Vector> *raw_samples;
   //
   Image(unsigned int w, unsigned int h) : width(w), height(h) {
-    pixels = new Vector[width * height];
-    samples = new unsigned int[width * height];
-    current = new Vector[width * height];
+    pixelsCount = width * height;
+    pixels = new Vector[pixelsCount];
+    samples = new unsigned int[pixelsCount];
+    //current = new Vector[pixelsCount];
     //raw_samples = new std::vector<Vector>[width * height];
   }
   Vector getPixel(unsigned int x, unsigned int y) {
@@ -115,8 +114,13 @@ struct Image {
     unsigned int index = (height - y - 1) * width + x;
     pixels[index] += v;
     samples[index] += 1;
-    current[index] = pixels[index] / samples[index];
+    //current[index] = pixels[index] / samples[index];
     //raw_samples[index].push_back(v);
+  }
+  void setPixelByIndex(unsigned index, const Vector& v) {
+      pixels[index] += v;
+      samples[index] += 1;
+      //current[index] = pixels[index] / samples[index];
   }
   Vector getSurroundingAverage(int x, int y, int pattern=0) {
     unsigned int index = (height - y - 1) * width + x;
@@ -132,7 +136,8 @@ struct Image {
         if (x + dx < 0 || x + dx > width - 1) continue;
         if (y + dy < 0 || y + dy > height - 1) continue;
         index = (height - (y + dy) - 1) * width + (x + dx);
-        avg += current[index];
+        //avg += current[index];
+        avg += pixels[index] / samples[index];
         total += 1;
       }
     }
@@ -148,7 +153,7 @@ struct Image {
     // PPM header: P3 => RGB, width, height, and max RGB value
     f << "P3 " << width << " " << height << " " << 255 << std::endl;
     // For each pixel, write the space separated RGB values
-    for (int i=0; i < width * height; i++) {
+    for (int i=0; i < pixelsCount; ++i) {
       auto p = pixels[i] / samples[i];
       unsigned int r = fmin(255, toInt(p.x)), g = fmin(255, toInt(p.y)), b = fmin(255, toInt(p.z));
       f << r << " " << g << " " << b << std::endl;
@@ -161,10 +166,10 @@ struct Image {
       // PPM header: P3 => RGB, width, height, and max RGB value
       f << "P6 " << width << " " << height << " " << 255 << std::endl;
 
-      unsigned len = 3 * width * height;
+      unsigned len = 3 * pixelsCount;
       unsigned char* buf = new unsigned char[len];
 
-      for (int i = 0; i < width * height; i++) {
+      for (int i = 0; i < pixelsCount; ++i) {
           auto p = pixels[i] / samples[i];
           unsigned int r = fmin(255, toInt(p.x)), g = fmin(255, toInt(p.y)), b = fmin(255, toInt(p.z));
           buf[3 * i] = r; buf[3 * i + 1] = g; buf[3 * i + 2] = b;
@@ -172,20 +177,6 @@ struct Image {
 
       f.write((char*)buf, len);
       f.close();
-  }
-  void saveHistogram(std::string filePrefix, int maxIters) {
-    std::string filename = filePrefix + ".ppm";
-    std::ofstream f;
-    f.open(filename.c_str(), std::ofstream::out);
-    // PPM header: P3 => RGB, width, height, and max RGB value
-    f << "P3 " << width << " " << height << " " << 255 << std::endl;
-    // For each pixel, write the space separated RGB values
-    for (int i=0; i < width * height; i++) {
-      auto p = samples[i] / maxIters;
-      unsigned int r, g, b;
-      r= g = b = fmin(255, 255 * p);
-      f << r << " " << g << " " << b << std::endl;
-    }
   }
   ~Image() {
     delete[] pixels;
@@ -195,8 +186,10 @@ struct Image {
 
 struct Shape {
   Vector color, emit;
+  double diffusion;
   //
-  Shape(const Vector color_, const Vector emit_) : color(color_), emit(emit_) {}
+  Shape(const Vector color_, const Vector emit_, const double reflection_ = .0) :
+      color(color_), emit(emit_), diffusion(1.0 - reflection_) {}
   virtual double intersects(const Ray &r) const { return 0; }
   virtual Vector randomPoint() const { return Vector(); }
   virtual Vector getNormal(const Vector &p) const { return Vector(); }
@@ -206,8 +199,14 @@ struct Sphere : Shape {
   Vector center;
   double radius;
   //
-  Sphere(const Vector center_, double radius_, const Vector color_, const Vector emit_) :
-    Shape(color_, emit_), center(center_), radius(radius_) {}
+  Sphere(
+      const Vector center_,
+      double radius_,
+      const Vector color_,
+      const Vector emit_,
+      const double reflection_ = .0
+  ) :
+    Shape(color_, emit_, reflection_), center(center_), radius(radius_) {}
   double intersects(const Ray &r) const {
     // Find if, and at what distance, the ray intersects with this object
     // Equation follows from solving quadratic equation of (r - c) ^ 2
@@ -270,51 +269,61 @@ std::vector<Shape*> baseScene = {
     // Floor sphere
     new Sphere(Vector(50, 1e5, 81.6), 1e5f, Vector(.75,.75,.75), Vector()),
     // Roof sphere
-    new Sphere(Vector(50,-1e5 + 81.6,81.6), 1e5f, Vector(.75,.75,.75), Vector()),
-    // Light source
-    new Sphere(Vector(50,65.1,81.6), 8.5, Vector(), Vector(4,4,4) * 100) // Small = 1.5, Large = 8.5
+    new Sphere(Vector(50,-1e5 + 81.6,81.6), 1e5f, Vector(.75,.75,.75), Vector())
 };
 //
 
+struct Scene {
+    std::vector<Shape*> objects, lights;
+    //
+    Scene(const std::vector<Shape*> objects_, const std::vector<Shape*> lights_) :
+        objects(objects_), lights(lights_) {}
+
+    Scene(const std::vector<Shape*> objects_) : objects(objects_) {}
+};
+
 struct Tracer {
-  std::vector<Shape *> scene;
+  Scene scene;
   //
-  Tracer(const std::vector<Shape *> &scene_) : scene(scene_) {}
+  Tracer(const Scene &scene_) : scene(scene_) {}
   std::pair<Shape *, double> getIntersection(const Ray &r) const {
     Shape *hitObj = NULL;
     double closest = 1e20f;
-    for (Shape *obj : scene) {
+    for (Shape *obj : scene.objects) {
       double distToHit = obj->intersects(r);
       if (distToHit > 0 && distToHit < closest) {
         hitObj = obj;
         closest = distToHit;
       }
     }
+    for (Shape* obj : scene.lights) {
+        double distToHit = obj->intersects(r);
+        if (distToHit > 0 && distToHit < closest) {
+            hitObj = obj;
+            closest = distToHit;
+        }
+    }
     return std::make_pair(hitObj, closest);
   }
   Vector getRadiance(const Ray &r, int depth) {
+    static const unsigned max_depth = MAX_DEPTH;
     // Work out what (if anything) was hit
     auto result = getIntersection(r);
     Shape *hitObj = result.first;
-    // Russian Roulette sampling based on reflectance of material
-    double U = drand();
-    if (depth > 4 && (depth > 20 || U > hitObj->color.max())) {
-      return Vector();
-    }
+
+    if (!hitObj) return Vector();
+
     Vector hitPos = r.origin + r.direction * result.second;
     Vector norm = hitObj->getNormal(hitPos);
     // Orient the normal according to how the ray struck the object
     if (norm.dot(r.direction) > 0) {
-      norm = norm * -1;
+      norm.selfScalar(-1);
+      //norm = norm * -1;
     }
     // Work out the contribution from directly sampling the emitters
     Vector lightSampling;
     if (EMITTER_SAMPLING) {
-      for (Shape *light : scene) {
-        // Skip any objects that don't emit light
-        if (light->emit.max() == 0) {
-          continue;
-        }
+      for (Shape *light : scene.lights) {
         Vector lightPos = light->randomPoint();
         Vector lightDirection = (lightPos - hitPos).norm();
         Ray rayToLight = Ray(hitPos, lightDirection);
@@ -335,25 +344,25 @@ struct Tracer {
     // Diffuse reflection condition:
     // Create orthogonal coordinate system defined by (x=u, y=v, z=norm)
     double angle = 2 * M_PI * drand();
-    double dist_cen = sqrt(drand());
-    Vector u;
-    if (fabs(norm.x) > 0.1) {
-      u = Vector(0, 1, 0);
-    } else {
-      u = Vector(1, 0, 0);
-    }
-    u = u.cross(norm).norm();
+    double dist_cen = hitObj->diffusion * sqrt(drand());
+    Vector u = (fabs(norm.x) > 0.1 ? Vector(0, 1, 0) : Vector(1, 0, 0)).cross(norm).norm();
     Vector v = norm.cross(u);
     // Direction of reflection
     Vector d = (u * cos(angle) * dist_cen + v * sin(angle) * dist_cen + norm * sqrt(1 - dist_cen * dist_cen)).norm();
 
+    // Russian Roulette sampling based on reflectance of material
+    //double U = drand();
+    //if (depth > 4 /* && (depth > 20 || drand() > 0.5 U > hitObj->color.max())*/) {
+    //    return Vector();
+    //}
     // Recurse
-    Vector reflected = getRadiance(Ray(hitPos, d), depth + 1);
+    Vector reflected = depth >= max_depth ? Vector() : getRadiance(Ray(hitPos, d), depth + 1);
     //
-    if (!EMITTER_SAMPLING || depth == 0) {
-      return hitObj->emit + hitObj->color * lightSampling + hitObj->color * reflected;
-    }
-    return hitObj->color * lightSampling + hitObj->color * reflected;
+
+    //if (!EMITTER_SAMPLING || depth == 0) {
+    return hitObj->emit + (hitObj->color * lightSampling) * hitObj->diffusion + hitObj->color * reflected;
+    //}
+    //return hitObj->color * lightSampling + hitObj->color * reflected;
   }
 };
 
@@ -364,25 +373,23 @@ struct ThreadInfo {
 
 ThreadInfo* threadsInfo;
 
-unsigned int SAMPLES = 25;
-
 int w = 512;
 int h = 512;
 
 Image * img;
-auto& scene = baseScene;
+Scene scene(baseScene);
 Tracer tracer = Tracer(scene);
 
-void threadRenderer(int id, int startY, int lastY) {
+void threadRenderer(int id, int startPos, int lastPos) {
   auto& threadInfo = threadsInfo[id];
   /////////////////////////
   // Variables to modify the process or the images
-  EMITTER_SAMPLING = true;
+  //EMITTER_SAMPLING = true;
   //int w = 256, h = 256;
-  int SNAPSHOT_INTERVAL = 10;
+  //int SNAPSHOT_INTERVAL = 10;
   //unsigned int SAMPLES = 50;
   bool FOCUS_EFFECT = false;
-  double FOCAL_LENGTH = 35;
+  double FOCAL_LENGTH = 50;
   double APERTURE_FACTOR = 1; // ratio of original/new aperture (>1: smaller view angle, <1: larger view angle)
   // Initialize the image
   //Image img(w, h);
@@ -410,58 +417,60 @@ void threadRenderer(int id, int startY, int lastY) {
   // Take a set number of samples per pixel
   
   // For each pixel, sample a ray in that direction
-  for (int y = startY; y < lastY; ++y) {
-    for (int x = 0; x < w; ++x) {
-      for (int sample = 0; sample < SAMPLES; ++sample) {
-        /*
-        Vector target = img.getPixel(x, y);
-        double A = (target - img.getSurroundingAverage(x, y, sample % 2)).abs().max() / (100 / 255.0);
+
+  const float fW = w;
+  const float fH = h;
+
+  for (unsigned ind = startPos; ind < lastPos; ++ind) {
+    unsigned x = ind % w;
+    unsigned y = h - ind / w;
+
+    //Vector& pixel = img->pixels[ind];
+
+    for (unsigned sample = 0; sample < SAMPLES; ++sample) {
+        
+        /*Vector target = img->getPixel(x, y);
+        double A = (target - img->getSurroundingAverage(x, y, sample % 2)).abs().max() / (100 / 255.0);
         if (sample > 10 && drand() > A) {
-          continue;
+            continue;
         }
-        ++updated;
-        */
+        ++updated;*/
+        
         // Jitter pixel randomly in dx and dy according to the tent filter
         double Ux = 2 * drand();
         double Uy = 2 * drand();
-        double dx;
-        if (Ux < 1) {
-          dx = sqrt(Ux) - 1;
-        } else {
-          dx = 1 - sqrt(2 - Ux);
-        }
-        double dy;
-        if (Uy < 1) {
-          dy = sqrt(Uy) - 1;
-        } else {
-          dy = 1 - sqrt(2 - Uy);
-        }
+        double dx = Ux < 1 ? sqrt(Ux) - 1 : 1 - sqrt(2 - Ux);
+        double dy = Uy < 1 ? sqrt(Uy) - 1 : 1 - sqrt(2 - Uy);
+
         // Calculate the direction of the camera ray
-        Vector d = (cx * (((x+dx) / float(w)) - 0.5)) + (cy * (((y+dy) / float(h)) - 0.5)) + camera.direction;
+        Vector d = (cx * (((x+dx) / fW) - 0.5)) + (cy * (((y+dy) / fH) - 0.5)) + camera.direction;
         Ray ray = Ray(camera.origin + d * 140, d.norm());
         // If we're actually using depth of field, we need to modify the camera ray to account for that
         if (FOCUS_EFFECT) {
-          // Calculate the focal point
-          Vector fp = (camera.origin + d * L) + d.norm() * FOCAL_LENGTH;
-          // Get a pixel point and new ray direction to calculate where the rays should intersect
-          Vector del_x = (cx * dx * L / float(w));
-          Vector del_y = (cy * dy * L / float(h));
-          Vector point = camera.origin + d * L;
-          point = point + del_x + del_y;
-          d = (fp - point).norm();
-          ray = Ray(camera.origin + d * L, d.norm());
+            // Calculate the focal point
+            Vector fp = (camera.origin + d * L) + d.norm() * FOCAL_LENGTH;
+            // Get a pixel point and new ray direction to calculate where the rays should intersect
+            Vector del_x = (cx * dx * L / fW);
+            Vector del_y = (cy * dy * L / fH);
+            Vector point = camera.origin + d * L;
+            point = point + del_x + del_y;
+            d = (fp - point).norm();
+            ray = Ray(camera.origin + d * L, d.norm());
         }
         // Retrieve the radiance of the given hit location (i.e. brightness of the pixel)
-        Vector rads = tracer.getRadiance(ray, 0);
+        auto rads = tracer.getRadiance(ray, 0);
+        //auto rads = tracer.getRadiance2(ray);
+        //pixel += tracer.getRadiance(ray, 0);
         // Clamp the radiance so it is between 0 and 1
         // If we don't do this, antialiasing doesn't work properly on bright lights
         rads.clamp();
         // Add result of sample to image
-        img->setPixel(x, y, rads);
-      }
+        img->setPixelByIndex(ind, rads);
     }
 
-    threadInfo.progress = double(y + 1 - startY) / (lastY - startY);
+    //pixel.selfScalar(1 / SAMPLES);
+
+    threadInfo.progress = double(ind + 1 - startPos) / (lastPos - startPos);
   }
 
   threadInfo.isDone = true;
@@ -471,9 +480,11 @@ class IFile {
 public:
     std::ifstream stream;
     char* buffer = NULL;
+    string str;
+    unsigned length;
 
     IFile(string filename) {
-        stream.open(filename, std::ifstream::in + std::ifstream::binary);
+        stream.open(filename, std::ifstream::in | std::ifstream::binary);
 
         stream.seekg(0, stream.end);
         int len = stream.tellg();
@@ -481,6 +492,14 @@ public:
 
         buffer = new char[len];
         stream.read((char*) buffer, len);
+
+        str = string(buffer);
+
+        length = len;
+    }
+
+    void clearForJson() {
+        str = str.substr(str.find_first_of("{["), str.find_last_of("}]"));
     }
 
     ~IFile() {
@@ -492,20 +511,34 @@ public:
     }
 };
 
-Vector parseVector(const rapidjson::Value &v, bool allowNull = false) {
+double parseDouble(const rapidjson::Value& v, bool allowNull = false) {
+    if (v.IsNumber()) return v.GetDouble();
+
+    if (allowNull) return .0;
+
+    throw "Bad double value in json";
+}
+
+Vector parseVector(const rapidjson::Value& v, bool allowNull = false) {
+//Vector parseVector(const rapidjson::Value &p, char* prop, Vector* dflt = NULL) {
     Vector result;
+
+    /*if (!p.HasMember(prop) && dflt) return *dflt;
+    else throw "Has no member";
+
+    auto v = p[prop];*/
 
     if (v.IsArray()) {
         auto values = v.GetArray();
 
-        result.x = values[0].GetDouble();
-        result.y = values[1].GetDouble();
-        result.z = values[2].GetDouble();
+        result.x = parseDouble(values[0]);
+        result.y = parseDouble(values[1]);
+        result.z = parseDouble(values[2]);
     }
     else if (v.IsObject()) {
-        result.x = v["x"].GetDouble();
-        result.y = v["y"].GetDouble();
-        result.z = v["z"].GetDouble();
+        result.x = parseDouble(v["x"]);
+        result.y = parseDouble(v["y"]);
+        result.z = parseDouble(v["z"]);
     }
     else if(!allowNull)
         throw "Bad vector in json";
@@ -513,35 +546,58 @@ Vector parseVector(const rapidjson::Value &v, bool allowNull = false) {
     return result;
 }
 
-void parseScene(string filename) {
-    IFile file(filename);
+void parseObjectsArray(
+    std::vector<Shape*> & res,
+    const rapidjson::Value & v
+) {
+    if (!v.IsArray()) return;
 
-    rapidjson::Document json;
-    json.Parse(file.buffer);
+    int added = 0, skipped = 0;
 
-    if (!json["objects"].IsArray()) return;
+    auto objs = v.GetArray();
 
-    auto objects = json["objects"].GetArray();
-
-    for (const auto& obj : objects) {
+    for (const auto& obj : objs) {
         auto type = obj["type"].GetString();
 
-        cout << "Shape " << type;
+        //cout << "Shape " << type;
 
         if (type != (string)"sphere") {
-            cout << endl;
+            //cout << endl;
+            ++skipped;
             continue;
         }
 
-        tracer.scene.push_back(new Sphere(
+        res.push_back(new Sphere(
             parseVector(obj["center"]),
-            obj["radius"].GetDouble(),
+            parseDouble(obj["radius"], true),
             parseVector(obj["color"]),
-            parseVector(obj["emit"], true)
+            parseVector(obj["emit"], true),
+            parseDouble(obj["reflection"], true)
         ));
 
-        cout << " added" << endl;
+        ++added;
+
+        //cout << " added" << endl;
     }
+
+    cout << "Added: " << added << "; Skipped: " << skipped << endl;
+}
+
+void parseScene(string filename) {
+    IFile file(filename);
+
+    file.clearForJson();
+
+    rapidjson::Document json;
+    json.Parse(file.str.c_str());
+
+    auto errors = json.GetParseError();
+
+    cout << "Lights:" << endl;
+    parseObjectsArray(tracer.scene.lights, json["lights"]);
+
+    cout << "Objects:" << endl;
+    parseObjectsArray(tracer.scene.objects, json["objects"]);
 }
 
 unsigned getCurrentTime() {
@@ -562,20 +618,26 @@ template<typename T> T getValue(string message, T defaultValue) {
     return defaultValue;
 }
 
-int main(int argc, const char* argv[]) {
-    #ifdef _WIN32
-        srand(1308);
-    #else
-        srand48(1308);
-    #endif
+void binary(void * p, bool need = true) {
+    unsigned long long v = *((unsigned long long *) p);
+    unsigned sz = 8 * sizeof(v);
 
+    while (--sz + 1)
+        cout << bool((1ULL << sz) & v);
+
+    if(need)
+        cout << endl;
+}
+
+int main(int argc, const char* argv[]) {
     string sceneFileName = getValue("Scene file", (string) "scenes/simple.json");
     parseScene(sceneFileName);
 
-    string resultFileName = getValue("Result file (w/o extension)", (string) "renders/render");
+    //string resultFileName = getValue("Result file (w/o extension)", (string) "renders/render");
 
     w = getValue("Image width", w);
     h = getValue("Image height", w);
+    MAX_DEPTH = getValue("Rendering depth", MAX_DEPTH);
     SAMPLES = getValue("Samples count", SAMPLES);
     const int cpus = getValue("Threads count", thread::hardware_concurrency());
 
@@ -584,22 +646,22 @@ int main(int argc, const char* argv[]) {
 
     img = new Image(w, h);
 
-    const int part = h / cpus;
-    int startIndex = 0;
+    const unsigned part = img->pixelsCount / cpus;
+    unsigned startIndex = 0;
 
     const unsigned startTime = getCurrentTime();
 
-    for (int i = 0; i < cpus - 1; ++i, startIndex += part) {
+    for (unsigned i = 0; i < cpus - 1; ++i, startIndex += part) {
         new thread(threadRenderer, i, startIndex, startIndex + part);
     }
 
-    new thread(threadRenderer, cpus - 1, startIndex, h);
+    new thread(threadRenderer, cpus - 1, startIndex, img->pixelsCount);
 
     while (true) {
         double sumProgress = 0;
         bool isAllDone = true;
 
-        for (int i = 0; i < cpus; ++i) {
+        for (unsigned i = 0; i < cpus; ++i) {
             sumProgress += threadsInfo[i].progress;
             isAllDone = isAllDone && threadsInfo[i].isDone;
         }
@@ -611,12 +673,39 @@ int main(int argc, const char* argv[]) {
         if (isAllDone)
             break;
 
-        this_thread::sleep_for(chrono::milliseconds(500));
+        this_thread::sleep_for(chrono::milliseconds(200));
     }
 
-    cout << endl << "Time: " << ((getCurrentTime() - startTime) / 1e4) << " ms" << endl;
+    unsigned calcTime = (getCurrentTime() - startTime) / 1e4;
+
+    cout << endl << "Time: " << calcTime << " ms" << endl;
+
+    string renderFolder = string("renders/") + sceneFileName.substr(
+        sceneFileName.find_last_of('/') + 1,
+        sceneFileName.find_last_of('.') - sceneFileName.find_last_of('/') - 1
+    );
+
+    _mkdir(renderFolder.c_str());
 
     // Save the resulting raytraced image
+
+    char resultFileName[100];
+
+    if (w == h) {
+        double k = (double) w / 1024;
+
+        sprintf_s(
+            resultFileName, "%s/%.3gk d%d s%d t%d",
+            renderFolder.c_str(), k, MAX_DEPTH, SAMPLES, calcTime
+        );
+    } else
+        sprintf_s(
+            resultFileName, "%s/%dx%d d%d s%d t%d",
+            renderFolder.c_str(), w, h, MAX_DEPTH, SAMPLES, calcTime
+        );
+
+    cout << resultFileName << endl;
+
     img->save(resultFileName);
 
     return 0;

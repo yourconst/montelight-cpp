@@ -6,7 +6,7 @@ cmake_minimum_required (VERSION 3.8)
 project ("MonteLight")
 
 # Add source to this project's executable.
-add_executable (MonteLight "montelight.cc")
+add_executable (MonteLight "montelight.cc" "libs/vector.hpp" "libs/gen_rand.hpp" "libs/drand.hpp")
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
@@ -14,11 +14,12 @@ endif()
 
 #set(CMAKE_CXX_FLAGS "-Wall -Wextra")
 #set(CMAKE_CXX_FLAGS_DEBUG "-g")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3")
+#set(CMAKE_CXX_FLAGS_RELEASE "-O3 /fp:fast -march=native")
+set(CMAKE_CXX_FLAGS_RELEASE "-Ox -Ofast -march=native")
 
-set_target_properties(
-    MonteLight PROPERTIES
-    currentDir "${CMAKE_SOURCE_DIR}/build")
+#target_compile_options(MonteLight PUBLIC -Ox -Ofast -march=native)
+
+#set_target_properties(MonteLight PROPERTIES currentDir "${CMAKE_SOURCE_DIR}/build")
 
 # TODO: Add tests and install targets if needed.
 include(ExternalProject)
