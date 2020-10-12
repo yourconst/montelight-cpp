@@ -39,10 +39,19 @@ ExternalProject_Add(
     INSTALL_COMMAND ""
     UPDATE_COMMAND ""
 )
-
 # Prepare RapidJSON (RapidJSON is a header-only library)
 ExternalProject_Get_Property(rapidjson source_dir)
 set(RAPIDJSON_INCLUDE_DIR ${source_dir}/include)
-
-
 include_directories(${RAPIDJSON_INCLUDE_DIR})
+
+ExternalProject_Add(
+    obj_loader
+    PREFIX "${CMAKE_SOURCE_DIR}/external_includes/OBJ-Loader"
+    GIT_REPOSITORY "https://github.com/Bly7/OBJ-Loader.git"
+    GIT_TAG 58cdc92a7460d034151a798f195905e262bfeebc
+    STEP_TARGETS build
+    EXCLUDE_FROM_ALL TRUE
+)
+ExternalProject_Get_Property(obj_loader source_dir)
+set(OBJ_LOADER_INCLUDE_DIR ${source_dir}/Source)
+include_directories(${OBJ_LOADER_INCLUDE_DIR})

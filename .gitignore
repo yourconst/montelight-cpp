@@ -6,3 +6,4 @@ out
 build/*
 
 !build/scenes
+!build/meshes

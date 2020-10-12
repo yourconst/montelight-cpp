@@ -1,0 +1,22 @@
+﻿{
+  "lights": [
+    {
+      "type": "sphere",
+      "center": [ 50, 70, 50 ],
+      "radius": 8,
+      "color": [ 0.7515, 0.777, 0.9105 ],
+      "emit": [ 1000, 1000, 1000 ]
+    }
+  ],
+  "objects": [
+    {
+      "type": "mesh",
+      "mesh": "meshes/female.obj",
+      "center": [ 70, 35, 20 ],
+      "radius": 35,
+      "color": [ 1, 1, 1 ],
+      "reflection": 1,
+      "diffusion": 0.1
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+﻿{
+  "lights": [
+    {
+      "type": "sphere",
+      "center": [ 50, 70, 50 ],
+      "radius": 8,
+      "color": [ 0.7515, 0.777, 0.9105 ],
+      "emit": [ 1000, 1000, 1000 ]
+    }
+  ],
+  "objects": [
+    {
+      "type": "mesh",
+      "mesh": "meshes/tower.obj",
+      "center": [ 50, 0, 30 ],
+      "radius": 5,
+      "color": [ 1, 1, 1 ]
+    }
+  ]
+}

@@ -16,6 +16,7 @@
 #include <direct.h>
 
 #include "rapidjson/document.h"
+#include "OBJ_Loader.h"
 
 #include "libs/drand.hpp"
 
@@ -184,7 +185,7 @@ struct Shape {
       const double diffusion_ = 1.0
   ) :
       color(color_), emit(emit_), reflection(reflection_), diffusion(diffusion_) {}
-  virtual double intersects(const Ray &r) const { return 0; }
+  virtual double intersects(const Ray &r) { return 0; }
   virtual Vector randomPoint() const { return Vector(); }
   virtual Vector getNormal(const Vector &p) const { return Vector(); }
 };
@@ -202,7 +203,7 @@ struct Sphere : Shape {
       const double diffusion_ = 1.0
   ) :
     Shape(color_, emit_, reflection_, diffusion_), center(center_), radius(radius_) {}
-  double intersects(const Ray &r) const {
+  double intersects(const Ray &r) {
     // Find if, and at what distance, the ray intersects with this object
     // Equation follows from solving quadratic equation of (r - c) ^ 2
     // http://wiki.cgsociety.org/index.php/Ray_Sphere_Intersection
@@ -249,6 +250,123 @@ struct Sphere : Shape {
   }
 };
 
+struct Vertex {
+    Vector vertex, normal;
+
+    Vertex() :
+        vertex(), normal() {}
+
+    Vertex(const Vector vertex_, const Vector normal_) :
+        vertex(vertex_), normal(normal_) {}
+
+    Vertex(double vx, double vy, double vz, double nx, double ny, double nz) :
+        vertex(vx, vy, vz), normal(nx, ny, nz) {}
+};
+
+thread_local Vector lastNormal;
+
+struct Mesh : Shape {
+    double size;
+    Vector center;
+    std::vector<Vertex> vertices;
+    std::vector<unsigned*> faces;
+    //
+    Mesh(
+        const Vector center_,
+        double size_,
+        const Vector color_,
+        const Vector emit_,
+        const double reflection_ = .0,
+        const double diffusion_ = 1.0
+    ) :
+        Shape(color_, emit_, reflection_, diffusion_), center(center_), size(size_) {}
+
+    void addVertex(Vertex v) {
+        vertices.push_back(v);
+    }
+
+    void addFace(unsigned v0, unsigned v1, unsigned v2) {
+        unsigned* f = new unsigned[3];
+
+        f[0] = v0;
+        f[1] = v1;
+        f[2] = v2;
+
+        faces.push_back(f);
+    }
+
+    double checkFace(unsigned* f, Vector& n, const Ray& r) const {
+        const Vector& v0 = center + vertices[f[0]].vertex * size,
+            & v1 = center + vertices[f[1]].vertex * size,
+            & v2 = center + vertices[f[2]].vertex * size;
+
+        Vector u = v1 - v0, v = v2 - v0;
+
+        n = u.cross(v).norm();
+
+        //if (n.dot(r.direction) <= 0)
+        //    return 0;
+
+        double downfp = n.dot(r.direction);
+
+        if (downfp == 0)
+            return 0;
+
+        double rI = n.dot(v0 - r.origin) / downfp;
+
+        if (rI < 0)
+            return 0;
+
+        Vector P = r.origin + r.direction * rI,
+            w = P - v0;
+
+        double uv = u.dot(v), uu = u.dot(u), vv = v.dot(v),
+            down = uv * uv - uu * vv,
+            wv = w.dot(v), wu = w.dot(u);
+
+        //if (fabs(down) < EPSILON)
+        if (down == 0)
+            return 0;
+
+        double s = (uv * wv - vv * wu) / down,
+            t = (uv * wu - uu * wv) / down;
+
+        if (s < 0 || t < 0 || s + t > 1)
+            return 0;
+
+        return rI;
+        //return (P - r.origin).mod();
+    }
+
+    double intersects(const Ray& r) {
+        double closest = 1e20f;
+
+        for (auto& f : faces) {
+            Vector n = vertices[f[0]].normal;
+            double distToHit = checkFace(f, n, r);
+
+            //n = (vertices[f[0]].normal + vertices[f[1]].normal + vertices[f[2]].normal) / 3;
+
+            if (distToHit > 0 && distToHit < closest) {
+                lastNormal = n;
+                closest = distToHit;
+            }
+        }
+
+        return closest;
+    }
+
+    Vector randomPoint() const {
+        unsigned ind = drand() * vertices.size();
+
+        return vertices[ind].vertex;
+    }
+
+    Vector getNormal(const Vector& p) const {
+        return lastNormal;
+    }
+};
+
 // Set up our testing scenes
 // They're all Cornell box inspired: http://graphics.ucsd.edu/~henrik/images/cbox.html
 /////////////////////////
@@ -262,9 +380,9 @@ std::vector<Shape*> baseScene = {
     // Back sphere
     new Sphere(Vector(50,40.8, 1e5), 1e5f, Vector(.75,.75,.75), Vector()),
     // Floor sphere
-    new Sphere(Vector(50, 1e5, 81.6), 1e5f, Vector(.75,.75,.75), Vector()),
+    new Sphere(Vector(50, 1e5, 81.6), 1e5f, Vector(1,1,1), Vector(), 0.5, 0.1),
     // Roof sphere
-    new Sphere(Vector(50,-1e5 + 81.6,81.6), 1e5f, Vector(.75,.75,.75), Vector(), 0.5, 0)
+    new Sphere(Vector(50,-1e5 + 81.6,81.6), 1e5f, Vector(.75,.75,.75), Vector())
 };
 //
 
@@ -284,13 +402,15 @@ struct Tracer {
   std::pair<Shape *, double> getIntersection(const Ray &r) const {
     Shape *hitObj = NULL;
     double closest = 1e20f;
+
     for (Shape *obj : scene.objects) {
-      double distToHit = obj->intersects(r);
-      if (distToHit > 0 && distToHit < closest) {
+        double distToHit = obj->intersects(r);
+        if (distToHit > 0 && distToHit < closest) {
         hitObj = obj;
         closest = distToHit;
-      }
+        }
     }
+
     for (Shape* obj : scene.lights) {
         double distToHit = obj->intersects(r);
         if (distToHit > 0 && distToHit < closest) {
@@ -298,6 +418,7 @@ struct Tracer {
             closest = distToHit;
         }
     }
+
     return std::make_pair(hitObj, closest);
   }
   Vector getRadiance(const Ray &r, int depth) {
@@ -625,6 +746,18 @@ Vector parseVector(const rapidjson::Value& v, bool allowNull = false) {
     return result;
 }
 
+void loadVerticesAndPolys(const objl::Mesh& obj, Mesh* mesh) {
+    for (auto& v : obj.Vertices)
+    {
+        auto& vp = v.Position, & np = v.Normal;
+
+        mesh->addVertex(Vertex(vp.X, vp.Y, vp.Z, np.X, np.Y, np.Z));
+    }
+
+    for (int j = 0; j < obj.Indices.size(); j += 3)
+        mesh->addFace(obj.Indices[j], obj.Indices[j + 1], obj.Indices[j + 2]);
+}
+
 void parseObjectsArray(
     std::vector<Shape*> & res,
     const rapidjson::Value & v
@@ -636,26 +769,50 @@ void parseObjectsArray(
     auto objs = v.GetArray();
 
     for (const auto& obj : objs) {
-        auto type = obj["type"].GetString();
+        string type = obj["type"].GetString();
 
         //cout << "Shape " << type;
 
-        if (type != (string)"sphere") {
-            //cout << endl;
-            ++skipped;
-            continue;
+        if (type == "sphere") {
+            res.push_back(new Sphere(
+                parseVector(obj["center"]),
+                parseDouble(obj["radius"]),
+                parseVector(obj["color"]),
+                parseVector(obj["emit"], true),
+                parseDouble(obj["reflection"], 0),
+                parseDouble(obj["diffusion"], 1)
+            ));
+
+            ++added;
         }
+        else if (type == "mesh") {
+            objl::Loader Loader;
+            string filename = obj["mesh"].GetString();
 
-        res.push_back(new Sphere(
-            parseVector(obj["center"]),
-            parseDouble(obj["radius"]),
-            parseVector(obj["color"]),
-            parseVector(obj["emit"], true),
-            parseDouble(obj["reflection"], 0),
-            parseDouble(obj["diffusion"], 1)
-        ));
+            bool loadout = Loader.LoadFile(filename);
 
-        ++added;
+            if (loadout) {
+                // Go through each loaded mesh and out its contents
+                for (auto& m : Loader.LoadedMeshes) {
+                    Mesh* mesh = new Mesh(
+                        parseVector(obj["center"]),
+                        parseDouble(obj["radius"], 10),
+                        parseVector(obj["color"]),
+                        parseVector(obj["emit"], true),
+                        parseDouble(obj["reflection"], 0),
+                        parseDouble(obj["diffusion"], 1)
+                    );
+
+                    loadVerticesAndPolys(m, mesh);
+
+                    res.push_back(mesh);
+
+                    ++added;
+                }
+            }
+        }
+        else
+            ++skipped;
 
         //cout << " added" << endl;
     }
@@ -710,7 +867,7 @@ void binary(void * p, bool need = true) {
 }
 
 int main(int argc, const char* argv[]) {
-    string sceneFileName = getValue("Scene file", (string) "scenes/simple.json");
+    string sceneFileName = getValue("Scene file", (string) "scenes/female.json");
     parseScene(sceneFileName);
 
     //string resultFileName = getValue("Result file (w/o extension)", (string) "renders/render");
